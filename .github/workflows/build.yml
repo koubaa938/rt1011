@@ -1,0 +1,40 @@
+name: Build RT1011 Driver
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build RT1011 x64 Release
+        shell: cmd
+        run: msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Collect driver files
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path RT1011-Driver | Out-Null
+          $files = Get-ChildItem -Path . -Recurse -File | Where-Object {
+            $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat')
+          }
+          if (-not $files) {
+            Write-Error 'No RT1011 driver files were produced.'
+          }
+          $files | ForEach-Object {
+            Copy-Item $_.FullName -Destination RT1011-Driver -Force
+          }
+          Get-ChildItem RT1011-Driver
+
+      - name: Upload RT1011 driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: RT1011-Driver
+          path: RT1011-Driver
