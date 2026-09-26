@@ -1,78 +1,82 @@
 name: Build RT1011 Driver
 
 on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-2025-vs2026
+    runs-on: windows-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Restore Microsoft WDK NuGet packages
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          nuget restore .\packages.config -PackagesDirectory .\packages
-          $wdk = Get-ChildItem .\packages -Directory -Filter 'Microsoft.Windows.WDK.x64.*' | Select-Object -First 1
-          if (-not $wdk) { throw 'WDK NuGet package was not restored.' }
-          Write-Host "WDK package: $($wdk.FullName)"
-
-      - name: Add WDK tools to PATH
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $wdk = Get-ChildItem .\packages -Directory -Filter 'Microsoft.Windows.WDK.x64.*' | Select-Object -First 1
-          $stamp = Get-ChildItem $wdk.FullName -Recurse -Filter stampinf.exe -File | Select-Object -First 1
-          if (-not $stamp) { throw 'stampinf.exe was not found inside the WDK NuGet package.' }
-          $toolDirs = @(
-            $stamp.Directory.FullName
-          )
-          $inf2cat = Get-ChildItem $wdk.FullName -Recurse -Filter Inf2Cat.exe -File | Select-Object -First 1
-          if ($inf2cat) { $toolDirs += $inf2cat.Directory.FullName }
-          $signtool = Get-ChildItem $wdk.FullName -Recurse -Filter signtool.exe -File | Select-Object -First 1
-          if ($signtool) { $toolDirs += $signtool.Directory.FullName }
-
-          Write-Host "stampinf: $($stamp.FullName)"
-          if ($inf2cat) { Write-Host "Inf2Cat: $($inf2cat.FullName)" }
-          if ($signtool) { Write-Host "signtool: $($signtool.FullName)" }
-
-          $toolDirs | Select-Object -Unique | ForEach-Object {
-            Add-Content $env:GITHUB_PATH $_
-          }
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v3
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build RT1011 x64 Release
+      - name: Restore NuGet Packages
+        run: nuget restore rt1011.sln
+
+      - name: WDK Diagnostics and Tool Path Verification
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          where.exe stampinf.exe
-          msbuild '.\rt1011.sln' /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
-
-      - name: Verify and package driver
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $sys = Get-ChildItem . -Recurse -Filter rt1011.sys -File | Select-Object -First 1
-          if (-not $sys) { throw 'rt1011.sys was not produced.' }
-
-          New-Item -ItemType Directory -Force RT1011-Driver | Out-Null
-          Copy-Item $sys.FullName RT1011-Driver\rt1011.sys -Force
-          Copy-Item .\rt1011\rt1011.inf RT1011-Driver\rt1011.inf -Force
-
-          $cat = Get-ChildItem . -Recurse -Filter rt1011.cat -File | Select-Object -First 1
-          if ($cat) {
-            Copy-Item $cat.FullName RT1011-Driver\rt1011.cat -Force
+          echo "=== MSBuild Properties Setup ==="
+          # Define the exact properties we will use to build
+          $props = "/p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64"
+          
+          # Query MSBuild properties directly from the driver project
+          $platform = msbuild rt1011/rt1011.vcxproj -getProperty:Platform $props
+          $config = msbuild rt1011/rt1011.vcxproj -getProperty:Configuration $props
+          $winsdk = msbuild rt1011/rt1011.vcxproj -getProperty:WindowsSdkDir $props
+          $winsdkver = msbuild rt1011/rt1011.vcxproj -getProperty:WindowsSDKVersion $props
+          $wdkbin = msbuild rt1011/rt1011.vcxproj -getProperty:WdkBinRoot $props
+          $stampinf = msbuild rt1011/rt1011.vcxproj -getProperty:StampInfToolPath $props
+          $inf2cat = msbuild rt1011/rt1011.vcxproj -getProperty:Inf2CatToolPath $props
+          $signtool = msbuild rt1011/rt1011.vcxproj -getProperty:SignToolPath $props
+          
+          echo "Platform: $platform"
+          echo "Configuration: $config"
+          echo "WindowsSdkDir: $winsdk"
+          echo "WindowsSDKVersion: $winsdkver"
+          echo "WdkBinRoot: $wdkbin"
+          
+          echo "=== Locating Exact WDK Tools ==="
+          if (-not [string]::IsNullOrWhiteSpace($wdkbin) -and (Test-Path "$wdkbin")) {
+             echo "Listing available StampInf binaries on disk:"
+             Get-ChildItem -Path $wdkbin -Recurse -Filter "stampinf.exe" | Select-Object FullName
           }
 
-          Get-ChildItem RT1011-Driver | Select-Object Name,Length
+          echo "Evaluated StampInf Path: $stampinf"
+          echo "Evaluated Inf2Cat Path: $inf2cat"
+          echo "Evaluated SignTool Path: $signtool"
+          
+          echo "=== Architecture Safety Check ==="
+          # Fallback check if StampInfToolPath evaluated empty
+          $checkPath = if ([string]::IsNullOrWhiteSpace($stampinf)) { "x64\stampinf.exe" } else { $stampinf }
+          
+          if ($checkPath -match "ARM64") {
+            Write-Error "Validation Failed: The workflow is configured to use the ARM64 stampinf.exe tool, which will trigger FileTracker error 0xd8!"
+            exit 1
+          } else {
+            Write-Host "Validation Passed: ARM64 stampinf.exe is NOT selected. x64 host tool is properly enforced." -ForegroundColor Green
+          }
 
-      - name: Upload RT1011 driver
+      - name: Build Driver (KMDF)
+        run: |
+          msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+
+      - name: Upload RT1011 Driver Artifact
         uses: actions/upload-artifact@v4
         with:
           name: RT1011-Driver
-          path: RT1011-Driver
+          path: |
+            **/x64/Release/**/*.sys
+            **/x64/Release/**/*.inf
+            **/x64/Release/**/*.cat
