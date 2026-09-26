@@ -113,13 +113,17 @@ jobs:
             }
           }
 
-          $toolDirs | Select-Object -Unique | ForEach-Object {
-            Add-Content $env:GITHUB_PATH $_
+          $toolDirs = $toolDirs | Select-Object -Unique
+
+          # Make the tools available both to this PowerShell process and to later steps.
+          foreach ($dir in $toolDirs) {
+            Add-Content $env:GITHUB_PATH $dir
+            $env:PATH = "$dir;$env:PATH"
           }
 
           Write-Host "Selected x64 StampInf: $($stampX64.FullName)"
           Write-Host 'Resolved stampinf.exe:'
-          where.exe stampinf.exe
+          Get-Command stampinf.exe -ErrorAction Stop | Select-Object -ExpandProperty Source
 
       - name: Build Driver (KMDF)
         run: |
