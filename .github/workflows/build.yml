@@ -5,22 +5,20 @@ on:
 
 jobs:
   build:
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Install WDK
+      - name: Restore Microsoft WDK NuGet packages
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $url = 'https://go.microsoft.com/fwlink/?linkid=2284101'
-          $installer = "$env:RUNNER_TEMP\wdksetup.exe"
-          Invoke-WebRequest -Uri $url -OutFile $installer
-          Start-Process $installer -ArgumentList '/quiet','/norestart' -Wait
-          $wdm = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Recurse -Filter wdm.h -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $wdm) { throw 'WDK installation completed but wdm.h was not found.' }
-          Write-Host "Found WDK header: $($wdm.FullName)"
+          nuget restore .\packages.config -PackagesDirectory .\packages
+          if (-not (Test-Path '.\packages\Microsoft.Windows.WDK.x64.10.0.28000.2526')) {
+            throw 'WDK NuGet package was not restored.'
+          }
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -28,21 +26,29 @@ jobs:
       - name: Build RT1011 x64 Release
         shell: powershell
         run: |
-          $wdm = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Recurse -Filter wdm.h -File | Select-Object -First 1
-          $version = $wdm.Directory.Parent.Name
-          Write-Host "WDK version: $version"
-          msbuild 'rt1011.sln' /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:WindowsTargetPlatformVersion=$version
+          $ErrorActionPreference = 'Stop'
+          msbuild '.\rt1011.sln' /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
 
-      - name: Package driver
+      - name: Verify and package driver
         shell: powershell
         run: |
-          $files = Get-ChildItem . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') }
-          $sys = $files | Where-Object Name -eq 'rt1011.sys'
+          $ErrorActionPreference = 'Stop'
+          $sys = Get-ChildItem . -Recurse -Filter rt1011.sys -File | Select-Object -First 1
           if (-not $sys) { throw 'rt1011.sys was not produced.' }
-          New-Item -ItemType Directory -Force RT1011-Driver | Out-Null
-          $files | ForEach-Object { Copy-Item $_.FullName RT1011-Driver -Force }
 
-      - uses: actions/upload-artifact@v4
+          New-Item -ItemType Directory -Force RT1011-Driver | Out-Null
+          Copy-Item $sys.FullName RT1011-Driver\rt1011.sys -Force
+          Copy-Item .\rt1011\rt1011.inf RT1011-Driver\rt1011.inf -Force
+
+          $cat = Get-ChildItem . -Recurse -Filter rt1011.cat -File | Select-Object -First 1
+          if ($cat) {
+            Copy-Item $cat.FullName RT1011-Driver\rt1011.cat -Force
+          }
+
+          Get-ChildItem RT1011-Driver | Select-Object Name,Length
+
+      - name: Upload RT1011 driver
+        uses: actions/upload-artifact@v4
         with:
           name: RT1011-Driver
           path: RT1011-Driver
