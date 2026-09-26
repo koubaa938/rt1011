@@ -58,43 +58,24 @@ jobs:
 
           Write-Host 'Searching for restored Microsoft.Windows.WDK.x64 package...'
 
-          $roots = @(
-            (Join-Path $env:GITHUB_WORKSPACE 'packages'),
-            (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x64')
-          ) | Where-Object { Test-Path $_ }
+          $global = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x64'
 
-          $wdkPackage = $null
-          foreach ($root in $roots) {
-            $candidate = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -match '^Microsoft\.Windows\.WDK\.x64\.' } |
-              Select-Object -First 1
-            if ($candidate) {
-              $wdkPackage = $candidate
-              break
-            }
+          Write-Host "NuGet WDK cache: $global"
 
-            if ($root -like '*\.nuget\packages\*') {
-              $candidate = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($candidate) {
-                $wdkPackage = $candidate
-                break
-              }
-            }
+          if (-not (Test-Path $global)) {
+            throw "WDK NuGet cache does not exist: $global"
           }
 
-          if (-not $wdkPackage) {
-            $global = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x64'
-            if (Test-Path $global) {
-              $versionDir = Get-ChildItem $global -Directory |
-                Sort-Object Name -Descending |
-                Select-Object -First 1
-              if ($versionDir) { $wdkPackage = $versionDir }
-            }
+          $versionDir = Get-ChildItem $global -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $versionDir) {
+            throw "No WDK package version found under: $global"
           }
 
-          if (-not $wdkPackage) {
-            throw 'Microsoft.Windows.WDK.x64 package could not be located after restore.'
-          }
+          $wdkPackage = $versionDir
+          Write-Host "WDK package found: $($wdkPackage.FullName)"
 
           Write-Host "WDK package found: $($wdkPackage.FullName)"
 
