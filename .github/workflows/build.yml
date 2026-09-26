@@ -16,8 +16,31 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           nuget restore .\packages.config -PackagesDirectory .\packages
-          if (-not (Test-Path '.\packages\Microsoft.Windows.WDK.x64.10.0.28000.2526')) {
-            throw 'WDK NuGet package was not restored.'
+          $wdk = Get-ChildItem .\packages -Directory -Filter 'Microsoft.Windows.WDK.x64.*' | Select-Object -First 1
+          if (-not $wdk) { throw 'WDK NuGet package was not restored.' }
+          Write-Host "WDK package: $($wdk.FullName)"
+
+      - name: Add WDK tools to PATH
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wdk = Get-ChildItem .\packages -Directory -Filter 'Microsoft.Windows.WDK.x64.*' | Select-Object -First 1
+          $stamp = Get-ChildItem $wdk.FullName -Recurse -Filter stampinf.exe -File | Select-Object -First 1
+          if (-not $stamp) { throw 'stampinf.exe was not found inside the WDK NuGet package.' }
+          $toolDirs = @(
+            $stamp.Directory.FullName
+          )
+          $inf2cat = Get-ChildItem $wdk.FullName -Recurse -Filter Inf2Cat.exe -File | Select-Object -First 1
+          if ($inf2cat) { $toolDirs += $inf2cat.Directory.FullName }
+          $signtool = Get-ChildItem $wdk.FullName -Recurse -Filter signtool.exe -File | Select-Object -First 1
+          if ($signtool) { $toolDirs += $signtool.Directory.FullName }
+
+          Write-Host "stampinf: $($stamp.FullName)"
+          if ($inf2cat) { Write-Host "Inf2Cat: $($inf2cat.FullName)" }
+          if ($signtool) { Write-Host "signtool: $($signtool.FullName)" }
+
+          $toolDirs | Select-Object -Unique | ForEach-Object {
+            Add-Content $env:GITHUB_PATH $_
           }
 
       - name: Setup MSBuild
@@ -27,6 +50,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          where.exe stampinf.exe
           msbuild '.\rt1011.sln' /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
 
       - name: Verify and package driver
