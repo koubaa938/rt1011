@@ -5,70 +5,44 @@ on:
 
 jobs:
   build:
-    runs-on: windows-2025-vs2026
+    runs-on: windows-2022
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Install WDK
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://go.microsoft.com/fwlink/?linkid=2284101'
+          $installer = "$env:RUNNER_TEMP\wdksetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process $installer -ArgumentList '/quiet','/norestart' -Wait
+          $wdm = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Recurse -Filter wdm.h -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $wdm) { throw 'WDK installation completed but wdm.h was not found.' }
+          Write-Host "Found WDK header: $($wdm.FullName)"
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Locate WDK and SDK
-        id: paths
-        shell: powershell
-        run: |
-          $kits = 'C:\Program Files (x86)\Windows Kits\10'
-          Get-ChildItem "$kits\Include" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object {
-            $wdm = Join-Path $_.FullName 'km\wdm.h'
-            if (Test-Path $wdm) { Write-Host "WDK include candidate: $wdm" }
-          }
-          Get-ChildItem "$kits\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { Write-Host "Bin: $($_.FullName)" }
-
-      - name: Prepare WDK environment
-        shell: powershell
-        run: |
-          $kits = 'C:\Program Files (x86)\Windows Kits\10'
-          $verDirs = Get-ChildItem "$kits\Include" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
-          $ver = $verDirs[0].Name
-          Write-Host "Selected SDK directory: $ver"
-          $env:WindowsSdkDir = "$kits\"
-          $env:WindowsSDKVersion = "$ver\"
-          $env:KitsRoot10 = "$kits\"
-          [Environment]::SetEnvironmentVariable('WindowsSdkDir', "$kits\", 'Process')
-          [Environment]::SetEnvironmentVariable('WindowsSDKVersion', "$ver\", 'Process')
-          [Environment]::SetEnvironmentVariable('KitsRoot10', "$kits\", 'Process')
-          Add-Content $env:GITHUB_ENV "WindowsSdkDir=$kits\"
-          Add-Content $env:GITHUB_ENV "WindowsSDKVersion=$ver\"
-          Add-Content $env:GITHUB_ENV "KitsRoot10=$kits\"
-          Write-Host "wdf.h candidates:"
-          Get-ChildItem "$kits\Include\$ver" -Recurse -Filter wdf.h | Select-Object -First 5 FullName
-          Write-Host "wdm.h candidates:"
-          Get-ChildItem "$kits\Include\$ver" -Recurse -Filter wdm.h | Select-Object -First 5 FullName
-
       - name: Build RT1011 x64 Release
-        shell: cmd
-        run: |
-          echo WindowsSdkDir=%WindowsSdkDir%
-          echo WindowsSDKVersion=%WindowsSDKVersion%
-          echo KitsRoot10=%KitsRoot10%
-          msbuild "rt1011.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:WindowsTargetPlatformVersion=%WindowsSDKVersion%
-
-      - name: Verify output
         shell: powershell
         run: |
-          $files = Get-ChildItem -Path . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') }
-          $files | Select-Object FullName,Length
-          if (-not ($files | Where-Object Name -eq 'rt1011.sys')) { throw 'rt1011.sys was not produced.' }
+          $wdm = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Recurse -Filter wdm.h -File | Select-Object -First 1
+          $version = $wdm.Directory.Parent.Name
+          Write-Host "WDK version: $version"
+          msbuild 'rt1011.sln' /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:WindowsTargetPlatformVersion=$version
 
       - name: Package driver
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path RT1011-Driver | Out-Null
-          Get-ChildItem -Path . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') } | ForEach-Object { Copy-Item $_.FullName RT1011-Driver -Force }
+          $files = Get-ChildItem . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') }
+          $sys = $files | Where-Object Name -eq 'rt1011.sys'
+          if (-not $sys) { throw 'rt1011.sys was not produced.' }
+          New-Item -ItemType Directory -Force RT1011-Driver | Out-Null
+          $files | ForEach-Object { Copy-Item $_.FullName RT1011-Driver -Force }
 
-      - name: Upload RT1011 driver
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: RT1011-Driver
           path: RT1011-Driver
