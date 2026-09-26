@@ -15,35 +15,41 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup NuGet
-        uses: NuGet/setup-nuget@v3
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install WDK and SDK Packages
-        # Download both the WDK and the matching SDK into the packages folder. 
-        # This provides all required kernel headers (wdm.h) and build tools independent of the runner's built-in SDKs.
-        run: |
-          nuget install Microsoft.Windows.WDK.x64 -Version 10.0.28000.2526 -OutputDirectory packages
-          nuget install Microsoft.Windows.SDK.CPP.x64 -Version 10.0.28000.2526 -OutputDirectory packages
-
-      - name: Enforce Architecture and SDK Version
+      - name: Inject PackageReferences and Architecture Properties
         shell: powershell
-        # MSBuild automatically loads Directory.Build.props.
-        # We override the project's hardcoded 10.0.26100.0 requirement to 10.0.28000.0 to match the downloaded packages.
-        # We also lock the host architecture to x64 to prevent the WDK targets from falling back to ARM64 tools.
+        # This replaces the standalone `nuget install` step.
+        # By setting RestoreProjectStyle to PackageReference, MSBuild will natively download 
+        # the SDK/WDK packages during the restore step and automatically configure internal 
+        # path variables (like WindowsSdkDir) to point to them instead of the system registry.
         run: |
           $props = @"
           <Project>
             <PropertyGroup>
+              <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+              <RestorePackagesProjectStyle>PackageReference</RestorePackagesProjectStyle>
+              
               <WindowsTargetPlatformVersion>10.0.28000.0</WindowsTargetPlatformVersion>
               <HostArchitecture>x64</HostArchitecture>
               <HostMachineOS>x64</HostMachineOS>
             </PropertyGroup>
+            
+            <ItemGroup>
+              <PackageReference Include="Microsoft.Windows.WDK.x64" Version="10.0.28000.2526" />
+              <PackageReference Include="Microsoft.Windows.SDK.CPP.x64" Version="10.0.28000.2526" />
+              <PackageReference Include="Microsoft.Windows.SDK.CPP" Version="10.0.28000.2526" />
+            </ItemGroup>
           </Project>
           "@
           Set-Content -Path "Directory.Build.props" -Value $props
+
+      - name: Restore NuGet Packages (MSBuild)
+        # This step parses Directory.Build.props, downloads the packages, and generates 
+        # the obj/project.assets.json file required to wire up the SDK headers and tools.
+        run: |
+          msbuild /t:restore rt1011.sln /m /p:Configuration=Release /p:Platform=x64
 
       - name: Build Driver (KMDF)
         run: |
