@@ -14,35 +14,49 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Inspect WDK environment
+      - name: Locate Windows SDK
+        id: sdk
         shell: powershell
         run: |
-          Write-Host "WDK/driver kit installations:"
-          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
-          Write-Host "MSBuild:"
-          msbuild -version
+          $includeRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+          $versions = Get-ChildItem $includeRoot -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'km\wdm.h') } | Sort-Object Name -Descending
+          if (-not $versions) { throw 'Could not find a Windows Kit version containing km\wdm.h' }
+          $ver = $versions[0].Name
+          Write-Host "Using Windows Kit version: $ver"
+          Write-Host "wdm.h: $includeRoot\$ver\km\wdm.h"
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build RT1011 x64 Release
-        shell: cmd
-        run: msbuild "rt1011.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
+        shell: powershell
+        env:
+          SDK_VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          $kit = "C:\Program Files (x86)\Windows Kits\10"
+          $inc = "$kit\Include\$env:SDK_VERSION"
+          $lib = "$kit\Lib\$env:SDK_VERSION"
+          $wdm = "$inc\km"
+          $shared = "$inc\shared"
+          $ucrt = "$inc\ucrt"
+          $um = "$inc\um"
+          $kmLib = "$lib\km\x64"
+          $umLib = "$lib\um\x64"
+          Write-Host "Building with WDK include: $wdm"
+          Write-Host "Building with WDK lib: $kmLib"
+          msbuild "rt1011.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:WindowsTargetPlatformVersion=$env:SDK_VERSION /p:IncludePath="$wdm;$shared;$ucrt;$um;%(AdditionalIncludeDirectories)" /p:LibraryPath="$kmLib;$umLib;%(AdditionalLibraryDirectories)"
 
-      - name: Find driver files
+      - name: Verify output
         shell: powershell
         run: |
-          Get-ChildItem -Path . -Recurse -File -Include rt1011.sys,rt1011.inf,rt1011.cat |
-            Select-Object FullName,Length
+          $files = Get-ChildItem -Path . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') }
+          if (-not $files) { throw 'Build produced no RT1011 driver files.' }
+          $files | Select-Object FullName,Length
 
       - name: Package driver
         shell: powershell
         run: |
+          Remove-Item RT1011-Driver -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path RT1011-Driver | Out-Null
-          $files = Get-ChildItem -Path . -Recurse -File | Where-Object {
-            $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat')
-          }
-          if (-not $files) { throw "No RT1011 driver files were produced." }
-          $files | ForEach-Object {
-            Copy-Item $_.FullName -Destination RT1011-Driver -Force
-          }
+          Get-ChildItem -Path . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') } | ForEach-Object { Copy-Item $_.FullName RT1011-Driver -Force }
 
       - name: Upload RT1011 driver
         uses: actions/upload-artifact@v4
