@@ -14,47 +14,56 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Locate Windows SDK
-        id: sdk
+      - name: Locate WDK and SDK
+        id: paths
         shell: powershell
         run: |
-          $includeRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
-          $versions = Get-ChildItem $includeRoot -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'km\wdm.h') } | Sort-Object Name -Descending
-          if (-not $versions) { throw 'Could not find a Windows Kit version containing km\wdm.h' }
-          $ver = $versions[0].Name
-          Write-Host "Using Windows Kit version: $ver"
-          Write-Host "wdm.h: $includeRoot\$ver\km\wdm.h"
-          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $kits = 'C:\Program Files (x86)\Windows Kits\10'
+          Get-ChildItem "$kits\Include" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object {
+            $wdm = Join-Path $_.FullName 'km\wdm.h'
+            if (Test-Path $wdm) { Write-Host "WDK include candidate: $wdm" }
+          }
+          Get-ChildItem "$kits\bin" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { Write-Host "Bin: $($_.FullName)" }
+
+      - name: Prepare WDK environment
+        shell: powershell
+        run: |
+          $kits = 'C:\Program Files (x86)\Windows Kits\10'
+          $verDirs = Get-ChildItem "$kits\Include" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+          $ver = $verDirs[0].Name
+          Write-Host "Selected SDK directory: $ver"
+          $env:WindowsSdkDir = "$kits\"
+          $env:WindowsSDKVersion = "$ver\"
+          $env:KitsRoot10 = "$kits\"
+          [Environment]::SetEnvironmentVariable('WindowsSdkDir', "$kits\", 'Process')
+          [Environment]::SetEnvironmentVariable('WindowsSDKVersion', "$ver\", 'Process')
+          [Environment]::SetEnvironmentVariable('KitsRoot10', "$kits\", 'Process')
+          Add-Content $env:GITHUB_ENV "WindowsSdkDir=$kits\"
+          Add-Content $env:GITHUB_ENV "WindowsSDKVersion=$ver\"
+          Add-Content $env:GITHUB_ENV "KitsRoot10=$kits\"
+          Write-Host "wdf.h candidates:"
+          Get-ChildItem "$kits\Include\$ver" -Recurse -Filter wdf.h | Select-Object -First 5 FullName
+          Write-Host "wdm.h candidates:"
+          Get-ChildItem "$kits\Include\$ver" -Recurse -Filter wdm.h | Select-Object -First 5 FullName
 
       - name: Build RT1011 x64 Release
-        shell: powershell
-        env:
-          SDK_VERSION: ${{ steps.sdk.outputs.version }}
+        shell: cmd
         run: |
-          $kit = "C:\Program Files (x86)\Windows Kits\10"
-          $inc = "$kit\Include\$env:SDK_VERSION"
-          $lib = "$kit\Lib\$env:SDK_VERSION"
-          $wdm = "$inc\km"
-          $shared = "$inc\shared"
-          $ucrt = "$inc\ucrt"
-          $um = "$inc\um"
-          $kmLib = "$lib\km\x64"
-          $umLib = "$lib\um\x64"
-          Write-Host "Building with WDK include: $wdm"
-          Write-Host "Building with WDK lib: $kmLib"
-          msbuild "rt1011.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:WindowsTargetPlatformVersion=$env:SDK_VERSION /p:IncludePath="$wdm;$shared;$ucrt;$um;%(AdditionalIncludeDirectories)" /p:LibraryPath="$kmLib;$umLib;%(AdditionalLibraryDirectories)"
+          echo WindowsSdkDir=%WindowsSdkDir%
+          echo WindowsSDKVersion=%WindowsSDKVersion%
+          echo KitsRoot10=%KitsRoot10%
+          msbuild "rt1011.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:WindowsTargetPlatformVersion=%WindowsSDKVersion%
 
       - name: Verify output
         shell: powershell
         run: |
           $files = Get-ChildItem -Path . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') }
-          if (-not $files) { throw 'Build produced no RT1011 driver files.' }
           $files | Select-Object FullName,Length
+          if (-not ($files | Where-Object Name -eq 'rt1011.sys')) { throw 'rt1011.sys was not produced.' }
 
       - name: Package driver
         shell: powershell
         run: |
-          Remove-Item RT1011-Driver -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path RT1011-Driver | Out-Null
           Get-ChildItem -Path . -Recurse -File | Where-Object { $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat') } | ForEach-Object { Copy-Item $_.FullName RT1011-Driver -Force }
 
