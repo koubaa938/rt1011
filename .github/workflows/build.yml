@@ -38,6 +38,7 @@ jobs:
             
             <ItemGroup>
               <PackageReference Include="Microsoft.Windows.WDK.x64" Version="10.0.28000.2526" />
+              <PackageReference Include="Microsoft.Windows.WDK.x86" Version="10.0.28000.2526" />
               <PackageReference Include="Microsoft.Windows.SDK.CPP.x64" Version="10.0.28000.2526" />
               <PackageReference Include="Microsoft.Windows.SDK.CPP" Version="10.0.28000.2526" />
             </ItemGroup>
@@ -121,13 +122,40 @@ jobs:
             $env:PATH = "$dir;$env:PATH"
           }
 
+          # WDK 10.0.28000's InfVerif MSBuild task loads x86\\InfVerif.dll
+          # relative to the WDK build directory. The x64 package does not
+          # provide that DLL in the expected relative location, so supply it
+          # from the matching x86 WDK package.
+          $x86Root = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x86'
+          $x86VersionDir = Get-ChildItem $x86Root -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $x86VersionDir) {
+            throw "Microsoft.Windows.WDK.x86 package was not restored."
+          }
+
+          $infVerifDll = Get-ChildItem $x86VersionDir.FullName -Recurse -Filter InfVerif.dll -File |
+            Select-Object -First 1
+
+          if (-not $infVerifDll) {
+            throw "InfVerif.dll was not found in the x86 WDK package."
+          }
+
+          $wdkBuildDir = Join-Path $wdkPackage.FullName 'c\build\10.0.28000.0'
+          $wdkBuildX86Dir = Join-Path $wdkBuildDir 'x86'
+          New-Item -ItemType Directory -Force -Path $wdkBuildX86Dir | Out-Null
+          Copy-Item $infVerifDll.FullName (Join-Path $wdkBuildX86Dir 'InfVerif.dll') -Force
+
+          Write-Host "Supplied InfVerif.dll: $($infVerifDll.FullName)"
+          Write-Host "InfVerif expected path: $wdkBuildX86Dir\InfVerif.dll"
           Write-Host "Selected x64 StampInf: $($stampX64.FullName)"
           Write-Host 'Resolved stampinf.exe:'
           Get-Command stampinf.exe -ErrorAction Stop | Select-Object -ExpandProperty Source
 
       - name: Build Driver (KMDF)
         run: |
-          msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64
+          msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off
 
       - name: Upload RT1011 Driver Artifact
         uses: actions/upload-artifact@v4
