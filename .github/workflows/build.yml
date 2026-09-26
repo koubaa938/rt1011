@@ -55,39 +55,89 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $wdkRoot = Join-Path $env:GITHUB_WORKSPACE 'packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\c'
-          if (-not (Test-Path $wdkRoot)) {
-            throw "WDK package root not found: $wdkRoot"
+
+          Write-Host 'Searching for restored Microsoft.Windows.WDK.x64 package...'
+
+          $roots = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'packages'),
+            (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x64')
+          ) | Where-Object { Test-Path $_ }
+
+          $wdkPackage = $null
+          foreach ($root in $roots) {
+            $candidate = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^Microsoft\.Windows\.WDK\.x64\.' } |
+              Select-Object -First 1
+            if ($candidate) {
+              $wdkPackage = $candidate
+              break
+            }
+
+            if ($root -like '*\.nuget\packages\*') {
+              $candidate = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($candidate) {
+                $wdkPackage = $candidate
+                break
+              }
+            }
           }
 
-          $stampX64 = Join-Path $wdkRoot 'bin\10.0.28000.0\x64\stampinf.exe'
-          $stampArm64 = Join-Path $wdkRoot 'bin\10.0.28000.0\ARM64\stampinf.exe'
-          if (-not (Test-Path $stampX64)) {
-            $stampX64 = (Get-ChildItem $wdkRoot -Recurse -Filter stampinf.exe -File |
-              Where-Object { $_.FullName -notmatch '\\ARM64\\' } |
-              Select-Object -First 1).FullName
-          }
-          if (-not $stampX64 -or -not (Test-Path $stampX64)) {
-            throw 'x64 stampinf.exe was not found in the WDK package.'
-          }
-          if ($stampX64 -match '\\ARM64\\') {
-            throw "Wrong architecture: selected ARM64 stampinf.exe: $stampX64"
+          if (-not $wdkPackage) {
+            $global = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x64'
+            if (Test-Path $global) {
+              $versionDir = Get-ChildItem $global -Directory |
+                Sort-Object Name -Descending |
+                Select-Object -First 1
+              if ($versionDir) { $wdkPackage = $versionDir }
+            }
           }
 
-          $toolDirs = @((Split-Path $stampX64 -Parent))
+          if (-not $wdkPackage) {
+            throw 'Microsoft.Windows.WDK.x64 package could not be located after restore.'
+          }
+
+          Write-Host "WDK package found: $($wdkPackage.FullName)"
+
+          $stampCandidates = Get-ChildItem $wdkPackage.FullName -Recurse -Filter stampinf.exe -File |
+            Where-Object { $_.FullName -notmatch '\\ARM64\\' }
+
+          Write-Host 'Available non-ARM64 stampinf.exe files:'
+          $stampCandidates | ForEach-Object { Write-Host $_.FullName }
+
+          $stampX64 = $stampCandidates |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Select-Object -First 1
+
+          if (-not $stampX64) {
+            $stampX64 = $stampCandidates | Select-Object -First 1
+          }
+
+          if (-not $stampX64) {
+            throw 'No non-ARM64 stampinf.exe was found in the restored WDK package.'
+          }
+
+          if ($stampX64.FullName -match '\\ARM64\\') {
+            throw "Wrong architecture: selected ARM64 stampinf.exe: $($stampX64.FullName)"
+          }
+
+          $toolDirs = @($stampX64.Directory.FullName)
+
           foreach ($name in @('Inf2Cat.exe','signtool.exe','makecat.exe')) {
-            $tool = Get-ChildItem $wdkRoot -Recurse -Filter $name -File |
+            $tool = Get-ChildItem $wdkPackage.FullName -Recurse -Filter $name -File |
               Where-Object { $_.FullName -notmatch '\\ARM64\\' } |
               Select-Object -First 1
-            if ($tool) { $toolDirs += $tool.Directory.FullName }
+            if ($tool) {
+              Write-Host "$name : $($tool.FullName)"
+              $toolDirs += $tool.Directory.FullName
+            }
           }
 
-          $toolDirs | Select-Object -Unique | ForEach-Object { Add-Content $env:GITHUB_PATH $_ }
-          Write-Host "Selected x64 stampinf: $stampX64"
-          Write-Host "ARM64 stampinf (must NOT be selected): $stampArm64"
-          Write-Host 'PATH entries added:'
-          $toolDirs | Select-Object -Unique | ForEach-Object { Write-Host $_ }
-          Write-Host 'Resolved stampinf:'
+          $toolDirs | Select-Object -Unique | ForEach-Object {
+            Add-Content $env:GITHUB_PATH $_
+          }
+
+          Write-Host "Selected x64 StampInf: $($stampX64.FullName)"
+          Write-Host 'Resolved stampinf.exe:'
           where.exe stampinf.exe
 
       - name: Build Driver (KMDF)
