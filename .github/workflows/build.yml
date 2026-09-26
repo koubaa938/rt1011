@@ -15,31 +15,26 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup NuGet
-        uses: NuGet/setup-nuget@v3
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore NuGet Packages
-        run: nuget restore rt1011.sln
+      - name: Restore NuGet Packages (MSBuild)
+        # Using msbuild /t:restore handles <PackageReference> elements inside .vcxproj files
+        run: msbuild /t:restore rt1011.sln /p:Configuration=Release /p:Platform=x64
 
       - name: WDK Diagnostics and Tool Path Verification
         shell: powershell
         run: |
           echo "=== MSBuild Properties Setup ==="
-          # Define the exact properties we will use to build
-          $props = "/p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64"
           
-          # Query MSBuild properties directly from the driver project
-          $platform = msbuild rt1011/rt1011.vcxproj -getProperty:Platform $props
-          $config = msbuild rt1011/rt1011.vcxproj -getProperty:Configuration $props
-          $winsdk = msbuild rt1011/rt1011.vcxproj -getProperty:WindowsSdkDir $props
-          $winsdkver = msbuild rt1011/rt1011.vcxproj -getProperty:WindowsSDKVersion $props
-          $wdkbin = msbuild rt1011/rt1011.vcxproj -getProperty:WdkBinRoot $props
-          $stampinf = msbuild rt1011/rt1011.vcxproj -getProperty:StampInfToolPath $props
-          $inf2cat = msbuild rt1011/rt1011.vcxproj -getProperty:Inf2CatToolPath $props
-          $signtool = msbuild rt1011/rt1011.vcxproj -getProperty:SignToolPath $props
+          # Query MSBuild properties directly, passing arguments explicitly instead of in a single string variable to avoid PowerShell parsing errors. Added -nologo to keep output clean.
+          $platform = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:Platform /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          $config = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:Configuration /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          $winsdk = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:WindowsSdkDir /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          $winsdkver = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:WindowsSDKVersion /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          $wdkbin = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:WdkBinRoot /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          $stampinf = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:StampInfToolPath /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          $inf2cat = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:Inf2CatToolPath /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
           
           echo "Platform: $platform"
           echo "Configuration: $config"
@@ -55,13 +50,9 @@ jobs:
 
           echo "Evaluated StampInf Path: $stampinf"
           echo "Evaluated Inf2Cat Path: $inf2cat"
-          echo "Evaluated SignTool Path: $signtool"
           
           echo "=== Architecture Safety Check ==="
-          # Fallback check if StampInfToolPath evaluated empty
-          $checkPath = if ([string]::IsNullOrWhiteSpace($stampinf)) { "x64\stampinf.exe" } else { $stampinf }
-          
-          if ($checkPath -match "ARM64") {
+          if ($stampinf -match "ARM64") {
             Write-Error "Validation Failed: The workflow is configured to use the ARM64 stampinf.exe tool, which will trigger FileTracker error 0xd8!"
             exit 1
           } else {
@@ -69,6 +60,7 @@ jobs:
           }
 
       - name: Build Driver (KMDF)
+        # The key fix: Enforce HostArchitecture so WDK targets use the x64 host tools instead of defaulting to ARM64
         run: |
           msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
 
