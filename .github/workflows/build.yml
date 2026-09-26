@@ -15,57 +15,24 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v3
+
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore NuGet Packages (MSBuild)
-        # Using msbuild /t:restore handles <PackageReference> elements inside .vcxproj files
-        run: msbuild /t:restore rt1011.sln /p:Configuration=Release /p:Platform=x64
-
-      - name: WDK Diagnostics and Tool Path Verification
-        shell: powershell
-        run: |
-          echo "=== MSBuild Properties Setup ==="
-          
-          # Query MSBuild properties directly, passing arguments explicitly instead of in a single string variable to avoid PowerShell parsing errors. Added -nologo to keep output clean.
-          $platform = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:Platform /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          $config = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:Configuration /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          $winsdk = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:WindowsSdkDir /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          $winsdkver = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:WindowsSDKVersion /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          $wdkbin = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:WdkBinRoot /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          $stampinf = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:StampInfToolPath /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          $inf2cat = msbuild rt1011/rt1011.vcxproj -nologo -getProperty:Inf2CatToolPath /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
-          
-          echo "Platform: $platform"
-          echo "Configuration: $config"
-          echo "WindowsSdkDir: $winsdk"
-          echo "WindowsSDKVersion: $winsdkver"
-          echo "WdkBinRoot: $wdkbin"
-          
-          echo "=== Locating Exact WDK Tools ==="
-          if (-not [string]::IsNullOrWhiteSpace($wdkbin) -and (Test-Path "$wdkbin")) {
-             echo "Listing available StampInf binaries on disk:"
-             Get-ChildItem -Path $wdkbin -Recurse -Filter "stampinf.exe" | Select-Object FullName
-          }
-
-          echo "Evaluated StampInf Path: $stampinf"
-          echo "Evaluated Inf2Cat Path: $inf2cat"
-          
-          echo "=== Architecture Safety Check ==="
-          if ($stampinf -match "ARM64") {
-            Write-Error "Validation Failed: The workflow is configured to use the ARM64 stampinf.exe tool, which will trigger FileTracker error 0xd8!"
-            exit 1
-          } else {
-            Write-Host "Validation Passed: ARM64 stampinf.exe is NOT selected. x64 host tool is properly enforced." -ForegroundColor Green
-          }
+      - name: Explicitly Install WDK NuGet Package
+        # This downloads the WDK directly into the "packages" folder so the .vcxproj can find wdm.h and the build tools.
+        run: nuget install Microsoft.Windows.WDK.x64 -Version 10.0.28000.2526 -OutputDirectory packages
 
       - name: Build Driver (KMDF)
-        # The key fix: Enforce HostArchitecture so WDK targets use the x64 host tools instead of defaulting to ARM64
+        # Passing HostArchitecture overrides the blank environment variables in GitHub Actions, forcing MSBuild to use the x64 tools (like x64\stampinf.exe) instead of ARM64.
         run: |
           msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
 
       - name: Upload RT1011 Driver Artifact
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: RT1011-Driver
           path: |
