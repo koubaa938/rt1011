@@ -51,6 +51,45 @@ jobs:
         run: |
           msbuild /t:restore rt1011.sln /m /p:Configuration=Release /p:Platform=x64
 
+      - name: Configure WDK host tools (x64)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wdkRoot = Join-Path $env:GITHUB_WORKSPACE 'packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\c'
+          if (-not (Test-Path $wdkRoot)) {
+            throw "WDK package root not found: $wdkRoot"
+          }
+
+          $stampX64 = Join-Path $wdkRoot 'bin\10.0.28000.0\x64\stampinf.exe'
+          $stampArm64 = Join-Path $wdkRoot 'bin\10.0.28000.0\ARM64\stampinf.exe'
+          if (-not (Test-Path $stampX64)) {
+            $stampX64 = (Get-ChildItem $wdkRoot -Recurse -Filter stampinf.exe -File |
+              Where-Object { $_.FullName -notmatch '\\ARM64\\' } |
+              Select-Object -First 1).FullName
+          }
+          if (-not $stampX64 -or -not (Test-Path $stampX64)) {
+            throw 'x64 stampinf.exe was not found in the WDK package.'
+          }
+          if ($stampX64 -match '\\ARM64\\') {
+            throw "Wrong architecture: selected ARM64 stampinf.exe: $stampX64"
+          }
+
+          $toolDirs = @((Split-Path $stampX64 -Parent))
+          foreach ($name in @('Inf2Cat.exe','signtool.exe','makecat.exe')) {
+            $tool = Get-ChildItem $wdkRoot -Recurse -Filter $name -File |
+              Where-Object { $_.FullName -notmatch '\\ARM64\\' } |
+              Select-Object -First 1
+            if ($tool) { $toolDirs += $tool.Directory.FullName }
+          }
+
+          $toolDirs | Select-Object -Unique | ForEach-Object { Add-Content $env:GITHUB_PATH $_ }
+          Write-Host "Selected x64 stampinf: $stampX64"
+          Write-Host "ARM64 stampinf (must NOT be selected): $stampArm64"
+          Write-Host 'PATH entries added:'
+          $toolDirs | Select-Object -Unique | ForEach-Object { Write-Host $_ }
+          Write-Host 'Resolved stampinf:'
+          where.exe stampinf.exe
+
       - name: Build Driver (KMDF)
         run: |
           msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64
