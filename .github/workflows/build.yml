@@ -21,14 +21,33 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Explicitly Install WDK NuGet Package
-        # This downloads the WDK directly into the "packages" folder so the .vcxproj can find wdm.h and the build tools.
-        run: nuget install Microsoft.Windows.WDK.x64 -Version 10.0.28000.2526 -OutputDirectory packages
+      - name: Install WDK and SDK Packages
+        # Download both the WDK and the matching SDK into the packages folder. 
+        # This provides all required kernel headers (wdm.h) and build tools independent of the runner's built-in SDKs.
+        run: |
+          nuget install Microsoft.Windows.WDK.x64 -Version 10.0.28000.2526 -OutputDirectory packages
+          nuget install Microsoft.Windows.SDK.CPP.x64 -Version 10.0.28000.2526 -OutputDirectory packages
+
+      - name: Enforce Architecture and SDK Version
+        shell: powershell
+        # MSBuild automatically loads Directory.Build.props.
+        # We override the project's hardcoded 10.0.26100.0 requirement to 10.0.28000.0 to match the downloaded packages.
+        # We also lock the host architecture to x64 to prevent the WDK targets from falling back to ARM64 tools.
+        run: |
+          $props = @"
+          <Project>
+            <PropertyGroup>
+              <WindowsTargetPlatformVersion>10.0.28000.0</WindowsTargetPlatformVersion>
+              <HostArchitecture>x64</HostArchitecture>
+              <HostMachineOS>x64</HostMachineOS>
+            </PropertyGroup>
+          </Project>
+          "@
+          Set-Content -Path "Directory.Build.props" -Value $props
 
       - name: Build Driver (KMDF)
-        # Passing HostArchitecture overrides the blank environment variables in GitHub Actions, forcing MSBuild to use the x64 tools (like x64\stampinf.exe) instead of ARM64.
         run: |
-          msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64 /p:HostArchitecture=x64 /p:HostMachineOS=x64
+          msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64
 
       - name: Upload RT1011 Driver Artifact
         uses: actions/upload-artifact@v4
