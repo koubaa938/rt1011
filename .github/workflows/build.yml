@@ -14,24 +14,35 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Inspect WDK environment
+        shell: powershell
+        run: |
+          Write-Host "WDK/driver kit installations:"
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
+          Write-Host "MSBuild:"
+          msbuild -version
+
       - name: Build RT1011 x64 Release
         shell: cmd
-        run: msbuild rt1011.sln /m /p:Configuration=Release /p:Platform=x64
+        run: msbuild "rt1011.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
 
-      - name: Collect driver files
+      - name: Find driver files
+        shell: powershell
+        run: |
+          Get-ChildItem -Path . -Recurse -File -Include rt1011.sys,rt1011.inf,rt1011.cat |
+            Select-Object FullName,Length
+
+      - name: Package driver
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path RT1011-Driver | Out-Null
           $files = Get-ChildItem -Path . -Recurse -File | Where-Object {
             $_.Name -in @('rt1011.sys','rt1011.inf','rt1011.cat')
           }
-          if (-not $files) {
-            Write-Error 'No RT1011 driver files were produced.'
-          }
+          if (-not $files) { throw "No RT1011 driver files were produced." }
           $files | ForEach-Object {
             Copy-Item $_.FullName -Destination RT1011-Driver -Force
           }
-          Get-ChildItem RT1011-Driver
 
       - name: Upload RT1011 driver
         uses: actions/upload-artifact@v4
